@@ -1,0 +1,27 @@
+{
+  "name": "adb-telecom",
+  "version": "1.0.0",
+  "description": "",
+  "main": "script.js",
+  "bin": {
+    "adb-telecom": "./script.js"
+  },
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jul-fls/node-adb-telecom.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/jul-fls/node-adb-telecom/issues"
+  },
+  "homepage": "https://github.com/jul-fls/node-adb-telecom#readme",
+  "dependencies": {
+    "balanced-match": "^3.0.1"
+  }
+}
