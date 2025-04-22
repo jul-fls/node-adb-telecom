@@ -1,6 +1,45 @@
 #!/usr/bin/env node
-import { execSync } from 'child_process';
 import balanced from 'balanced-match';
+import adb from 'adbkit';
+const client = adb.createClient();
+
+let deviceId = null;
+
+/**
+ * Initialize (or re-init) the ADB device connection.
+ */
+async function initDevice() {
+  const devices = await client.listDevices();
+  if (devices.length === 0) {
+    throw new Error('No ADB devices found');
+  }
+  deviceId = devices[0].id;
+}
+
+/**
+ * Returns the full dumpsys telecom output as a string,
+ * reusing the same adb connection. If it fails, we'll
+ * re-init the device and retry once.
+ */
+async function getTelephoneDump() {
+  if (!deviceId) {
+    await initDevice();
+  }
+  try {
+    const output = await client
+      .shell(deviceId, 'dumpsys telecom')
+      .then(adb.util.readAll);
+    return output.toString('utf8').trim();
+  } catch (err) {
+    // Connection may have dropped—try one re-init & retry
+    deviceId = null;
+    await initDevice();
+    const output = await client
+      .shell(deviceId, 'dumpsys telecom')
+      .then(adb.util.readAll);
+    return output.toString('utf8').trim();
+  }
+}
 
 /**
  * Parse a dumpsys-style indented block into a nested JS object.
@@ -22,7 +61,7 @@ function parseDump(input) {
 
     const m = text.match(/^([^:]+):\s*(.*)$/);
     if (m) {
-      const key   = m[1], value = m[2];
+      const [_, key, value] = m;
       if (value !== '') {
         addField(parent, key, parsePrimitive(value));
       } else {
@@ -42,24 +81,15 @@ function parseDump(input) {
       addField(parent, '_items', text);
     }
   }
-
   return root;
 }
 
-/**
- * Add a field to an object, creating an array if necessary.
- *  If the field already exists, append to it or convert to an array.
- * */
 function addField(obj, key, val) {
   if (!(key in obj))             obj[key] = val;
   else if (Array.isArray(obj[key])) obj[key].push(val);
   else                            obj[key] = [obj[key], val];
 }
 
-/**
- * Parse a string into a primitive value (number, boolean, or string).
- *  This is a simplified version of JSON.parse().
- */
 function parsePrimitive(str) {
   if (/^(?:true|false)$/i.test(str)) return str.toLowerCase() === 'true';
   if (!isNaN(str) && str.trim() !== '') return Number(str);
@@ -69,16 +99,6 @@ function parsePrimitive(str) {
 /**
  * Returns the current call ID (e.g. "TC@56") or null if idle.
  */
-function getTelephoneDump() {
-    const dump = execSync('adb shell dumpsys telecom', { encoding: 'utf8' });
-    return dump;
-}
-
-/**
- * Process the dumpsys telecom output and return all calls.
- * This is a simplified version of the original function.
- * It assumes the input is a string and parses it into an object.
- * */
 function getAllCalls(dump) {
   const state = parseDump(dump);
   const allCalls = state.CallsManager
@@ -88,11 +108,11 @@ function getAllCalls(dump) {
   const items = Array.isArray(allCalls._items)
     ? allCalls._items
     : [allCalls._items];
-  return items.length ? items[0] : null;
+  return items[0] || null;
 }
 
 /**
- * Extract the full analytics block for a given callId and parse it.
+ * Extract analytics for a given callId.
  */
 function extractAnalytics(dump, callId) {
   const startToken = `Call ${callId}:`;
@@ -110,16 +130,17 @@ function extractAnalytics(dump, callId) {
  * Find the CALL_HANDLE (tel:+...) for a given callId.
  */
 function getCallerNumber(dump, callId) {
-  const startToken   = `Call${callId}`;          // e.g. "CallTC@8"
-  const handleToken  = 'CALL_HANDLE (tel:';      // prefix before the number
-  const startIdx     = dump.indexOf(startToken);
+  const startToken  = `Call${callId}`;
+  const handleToken = 'CALL_HANDLE (tel:';
+  const startIdx    = dump.indexOf(startToken);
   if (startIdx === -1) return '';
   const handleIdx = dump.indexOf(handleToken, startIdx);
   if (handleIdx === -1) return '';
   const numStart = handleIdx + handleToken.length;
   const commaIdx = dump.indexOf(',', numStart);
-  if (commaIdx === -1) return dump.slice(numStart).trim();
-  return dump.slice(numStart, commaIdx).trim();
+  return commaIdx === -1
+    ? dump.slice(numStart).trim()
+    : dump.slice(numStart, commaIdx).trim();
 }
 
 /**
@@ -132,44 +153,43 @@ function getCallState(dump, callId) {
   if (idx === -1) return '';
   const start = idx + stateToken.length;
   const end   = dump.indexOf(',', start);
-  if (end === -1) return dump.slice(start).trim();
-  return dump.slice(start, end).trim();
+  return end === -1
+    ? dump.slice(start).trim()
+    : dump.slice(start, end).trim();
 }
 
-// ——————— Poller & Console Table ———————
-let prevCallId      = null;
+// ————— Poller & Console Table —————
 let prevPhoneState  = 'IDLE';
 let inCallStartTime = null;
 
-setInterval(() => {
-  const dump = getTelephoneDump();
-  let currCall = null;
+setInterval(async () => {
+  let dump;
   try {
-    currCall = getAllCalls(dump);
-  } catch (e) {
-    console.error('adb failed:', e.message);
+    dump = await getTelephoneDump();
+  } catch (err) {
+    console.error('adb failed:', err.message);
     return;
   }
 
-  // Gather analytics & telecom-reported state
+  const currCall = getAllCalls(dump);
   const analytics = currCall ? extractAnalytics(dump, currCall) : {};
   const direction = analytics.direction || '';
   const rawState  = currCall ? getCallState(dump, currCall) : '';
 
   // Map to a simpler phoneState
   let phoneState;
-  if (!currCall)                            phoneState = 'IDLE';
-  else if (rawState === 'RINGING')          phoneState = 'RINGING';
-  else if (rawState === 'DIALING')          phoneState = 'DIALING';
-  else if (direction === 'OUTGOING' && !rawState) phoneState = 'DIALING';
-  else                                      phoneState = 'IN_CALL';
+  if (!currCall)                                   phoneState = 'IDLE';
+  else if (rawState === 'RINGING')                 phoneState = 'RINGING';
+  else if (rawState === 'DIALING')                 phoneState = 'DIALING';
+  else if (direction === 'OUTGOING' && !rawState)  phoneState = 'DIALING';
+  else                                             phoneState = 'IN_CALL';
 
-  // Start timer when we first enter "in call"
+  // Start timer when we first enter "IN_CALL"
   if (phoneState === 'IN_CALL' && prevPhoneState !== 'IN_CALL') {
     inCallStartTime = Date.now();
   }
-  // Reset when call ends
-  if (phoneState === 'IDLE' && prevPhoneState === 'IN_CALL') {
+  // Reset when call goes idle
+  if (phoneState === 'IDLE') {
     inCallStartTime = null;
   }
 
@@ -185,7 +205,6 @@ setInterval(() => {
     duration = `${h}:${m}:${s}`;
   }
 
-  // Refresh the console table
   console.clear();
   console.table([{
     phoneState,
@@ -194,6 +213,5 @@ setInterval(() => {
     duration
   }]);
 
-  prevCallId     = currCall;
   prevPhoneState = phoneState;
-}, 100);
+}, 400);
