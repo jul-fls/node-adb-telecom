@@ -18,6 +18,7 @@ FROM node:20-alpine AS runtime
 
 # Set the working directory
 WORKDIR /app
+RUN apk add --no-cache android-tools
 
 # Copy node_modules and application code from the build stage
 COPY --from=build /app /app
