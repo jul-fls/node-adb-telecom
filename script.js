@@ -1,19 +1,35 @@
 #!/usr/bin/env node
 import balanced from 'balanced-match';
 import adb from 'adbkit';
-const client = adb.createClient();
+import dotenv from 'dotenv';
+dotenv.config();
 
+const client = adb.createClient();
 let deviceId = null;
 
 /**
  * Initialize (or re-init) the ADB device connection.
  */
 async function initDevice() {
-  const devices = await client.listDevices();
-  if (devices.length === 0) {
-    throw new Error('No ADB devices found');
+  try {
+    // 1) ask the local ADB server to connect to your network device
+    await client.connect(`${process.env.ADB_DEVICE_IP}:${process.env.ADB_DEVICE_PORT}`);
+    console.log("Connected to device!");
+
+    // 2) list all known devices (including the one we just tcp/ip‑connected)
+    const devices = await client.listDevices();
+    if (devices.length === 0) {
+      throw new Error("No ADB devices found");
+    }
+
+    // 3) grab the first device's id as a raw string
+    deviceId = devices[0].id;
+    console.log("Found device:", deviceId);
+  } catch (err) {
+    console.error("initDevice failed:", err.message);
+    // re‑throw so that callers can retry or bail
+    throw err;
   }
-  deviceId = devices[0].id;
 }
 
 /**
@@ -38,6 +54,72 @@ async function getTelephoneDump() {
       .shell(deviceId, 'dumpsys telecom')
       .then(adb.util.readAll);
     return output.toString('utf8').trim();
+  }
+}
+
+/**
+ * Make a phone call to the given number.
+ * Returns the output of the adb shell command.
+ * If the device is not connected, it will attempt to re-init the connection.
+ */
+async function callPhoneNumber(phoneNumber) {
+  if (!deviceId) {
+    await initDevice();
+  }
+  const command = `am start -a android.intent.action.CALL -d tel:${phoneNumber}`;
+  try {
+    const output = await client
+      .shell(deviceId, command);
+  } catch (err) {
+    // Connection may have dropped—try one re-init & retry
+    deviceId = null;
+    await initDevice();
+    const output = await client
+      .shell(deviceId, command);
+  }
+}
+
+/**
+ * Hang up the current call.
+ * Returns the output of the adb shell command.
+ * If the device is not connected, it will attempt to re-init the connection.
+ * */
+async function endCall() {
+  if (!deviceId) {
+    await initDevice();
+  }
+  const command = 'input keyevent KEYCODE_ENDCALL';
+  try {
+    const output = await client
+      .shell(deviceId, command);
+  } catch (err) {
+    // Connection may have dropped—try one re-init & retry
+    deviceId = null;
+    await initDevice();
+    const output = await client
+      .shell(deviceId, command);
+  }
+}
+
+/**
+ * Accept the current incoming call.
+ * Returns the output of the adb shell command.
+ * If the device is not connected, it will attempt to re-init the connection.
+ * */
+async function acceptCall() {
+  if (!deviceId) {
+    await initDevice();
+  }
+  const command = 'input keyevent KEYCODE_CALL';
+  try {
+    const output = await client
+      .shell(deviceId, command);
+  } catch (err) {
+    // Connection may have dropped—try one re-init & retry
+    deviceId = null;
+    await initDevice();
+    const output = await client
+      .shell(deviceId, command);
   }
 }
 

@@ -23,6 +23,7 @@
   "homepage": "https://github.com/jul-fls/node-adb-telecom#readme",
   "dependencies": {
     "adbkit": "^2.11.1",
-    "balanced-match": "^3.0.1"
+    "balanced-match": "^3.0.1",
+    "dotenv": "^16.5.0"
   }
 }
