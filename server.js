@@ -349,4 +349,4 @@ setInterval(async () => {
     };
   
     prevPhoneState = phoneState;
-  }, 400);
+  }, process.env.POLL_INTERVAL || 1000);
